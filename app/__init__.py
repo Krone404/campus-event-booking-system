@@ -20,6 +20,9 @@ def create_app() -> Flask:
     from .routes.events import events_bp
     app.register_blueprint(events_bp)
 
+    from .routes.debug import debug_bp
+    app.register_blueprint(debug_bp)
+
     @app.get("/")
     def home():
         return redirect(url_for("events.list_events"))
