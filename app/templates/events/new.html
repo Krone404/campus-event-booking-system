@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Create Event</h1>
+
+<form method="post">
+  <label>Title</label><br>
+  <input name="title" required><br><br>
+
+  <label>Location</label><br>
+  <input name="location" required><br><br>
+
+  <label>Start time</label><br>
+  <input type="datetime-local" name="start_time" required><br><br>
+
+  <label>End time</label><br>
+  <input type="datetime-local" name="end_time" required><br><br>
+
+  <label>Capacity</label><br>
+  <input type="number" name="capacity" min="1" required><br><br>
+
+  <label>Description</label><br>
+  <textarea name="description"></textarea><br><br>
+
+  <button type="submit">Create</button>
+</form>
+{% endblock %}

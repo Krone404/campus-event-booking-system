@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Events</h1>
+
+{% if current_user.is_authenticated and current_user.role == "admin" %}
+  <p><a href="{{ url_for('events.new_event') }}">Create new event</a></p>
+{% endif %}
+
+<ul>
+  {% for e in events %}
+    <li>
+      <strong>{{ e.title }}</strong> — {{ e.location }}<br>
+      {{ e.start_time }} to {{ e.end_time }}<br>
+      Capacity: {{ e.capacity }}<br>
+
+      {% if current_user.is_authenticated %}
+        <form method="post" action="{{ url_for('events.book_event', event_id=e.id) }}">
+          <button type="submit">Book</button>
+        </form>
+      {% else %}
+        <small><a href="/auth/login">Login</a> to book</small>
+      {% endif %}
+    </li>
+    <hr>
+  {% else %}
+    <li>No events yet.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

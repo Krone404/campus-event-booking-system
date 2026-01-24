@@ -1,9 +1,3 @@
-import os
-from flask import Flask
+from app import create_app
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
-
-@app.get("/")
-def home():
-    return "Campus Events system is running ✅"
+app = create_app()

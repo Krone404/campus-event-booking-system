@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Campus Events</title>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a> |
+    <a href="/auth/register">Register</a> |
+    <a href="/auth/login">Login</a> |
+    <a href="/events">Events</a> |
+    <a href="/auth/me">Me</a> |
+    <a href="/auth/logout">Logout</a>
+  </nav>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul>
+        {% for category, message in messages %}
+          <li><strong>{{ category }}:</strong> {{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
