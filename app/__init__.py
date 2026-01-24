@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, redirect, url_for
 from .config import Config
 from .extensions import db, login_manager
 from .models import User
@@ -22,7 +22,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def home():
-        return "Campus Events system is running ✅"
+        return redirect(url_for("events.list_events"))
 
     @app.cli.command("init-db")
     def init_db():
