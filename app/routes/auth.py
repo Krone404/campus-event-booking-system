@@ -3,6 +3,8 @@ from flask_login import login_user, logout_user, login_required
 from sqlalchemy import select
 from ..extensions import db
 from ..models import User
+from ..services.logging_service import log_event
+
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -31,6 +33,7 @@ def register_post():
     db.session.commit()
 
     login_user(user)
+    log_event("user_registered", user_id=user.id, meta={"email": user.email})
     flash("Account created. You're logged in.", "success")
     return redirect(url_for("auth.me"))
 
@@ -49,6 +52,7 @@ def login_post():
         return redirect(url_for("auth.login"))
 
     login_user(user)
+    log_event("user_login", user_id=user.id)
     flash("Logged in.", "success")
     return redirect(url_for("auth.me"))
 
@@ -56,6 +60,7 @@ def login_post():
 @login_required
 def logout():
     logout_user()
+    log_event("user_logout", user_id=current_user.id)
     flash("Logged out.", "success")
     return redirect(url_for("home"))
 

@@ -4,6 +4,7 @@ from flask_login import login_required, current_user
 from sqlalchemy import select
 from ..extensions import db
 from ..models import Event, Booking
+from ..services.logging_service import log_event
 
 events_bp = Blueprint("events", __name__, url_prefix="/events")
 
@@ -70,6 +71,8 @@ def new_event_post():
     db.session.add(event)
     db.session.commit()
 
+    log_event("event_created", user_id=current_user.id, meta={"event_id": event.id, "title": event.title})
+
     flash("Event created.", "success")
     return redirect(url_for("events.list_events"))
 
@@ -97,6 +100,8 @@ def book_event(event_id: int):
         db.session.rollback()
         flash("You already booked this event.", "error")
         return redirect(url_for("events.list_events"))
+
+    log_event("booking_created", user_id=current_user.id, meta={"event_id": event_id})
 
     flash("Booking confirmed.", "success")
     return redirect(url_for("events.list_events"))
