@@ -1,0 +1,9 @@
+runtime: python312
+entrypoint: gunicorn -b :$PORT main:app
+
+env_variables:
+  FLASK_SECRET_KEY: "change-me"
+  CLOUD_SQL_CONNECTION_NAME: "sd-assignment-485308:europe-west2:campus-events-db"
+  DB_NAME: "campus_events"
+  DB_USER: "appuser"
+  DB_PASS: "put-in-real-app-yaml-only"
