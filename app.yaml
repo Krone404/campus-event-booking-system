@@ -1,6 +1,0 @@
-runtime: python312
-
-entrypoint: gunicorn -b :$PORT main:app
-
-env_variables:
-  FLASK_SECRET_KEY: "dev-change-me"
