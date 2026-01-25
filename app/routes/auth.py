@@ -67,4 +67,4 @@ def logout():
 @auth_bp.get("/me")
 @login_required
 def me():
-    return render_template("auth/me.html")
+    return render_template("auth/me.html", db_uri=str(db.engine.url))

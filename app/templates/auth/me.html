@@ -1,5 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>My Account</h1>
-<p>You are logged in.</p>
+
+{% if current_user.is_authenticated %}
+  <p><strong>Status:</strong> Logged in</p>
+
+  <h2>User</h2>
+  <ul>
+    <li><strong>ID:</strong> {{ current_user.id }}</li>
+    <li><strong>Email:</strong> {{ current_user.email }}</li>
+    <li><strong>Role:</strong> {{ current_user.role }}</li>
+    <li><strong>Authenticated:</strong> {{ current_user.is_authenticated }}</li>
+  </ul>
+
+  <h2>Server Debug</h2>
+  <ul>
+    <li><strong>DB URI:</strong> {{ db_uri }}</li>
+  </ul>
+{% else %}
+  <p><strong>Status:</strong> Not logged in</p>
+  <p><a href="/auth/login">Login</a></p>
+{% endif %}
+
 {% endblock %}
