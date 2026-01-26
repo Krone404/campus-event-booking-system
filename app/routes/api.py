@@ -1,13 +1,11 @@
 from __future__ import annotations
-
 from datetime import datetime
 from typing import Any, Dict, Optional
-
 from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
-
 from ..extensions import db
 from ..models import Event, Booking
+import uuid
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -165,7 +163,12 @@ def book_event(event_id: int):
     if event.capacity is not None and booked >= int(event.capacity):
         return jsonify({"error": "conflict", "message": "Event is full"}), 409
 
-    booking = Booking(user_id=current_user.id, event_id=event_id)
+    booking = Booking(
+        user_id=current_user.id,
+        event_id=event_id,
+        ticket_code=str(uuid.uuid4())
+    )
+
     db.session.add(booking)
     db.session.commit()
 

@@ -51,6 +51,8 @@ class Booking(db.Model):
 
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey("events.id"), nullable=False, index=True)
+    
+    ticket_code = db.Column(db.String(64), unique=True, nullable=True, index=True)
 
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
 

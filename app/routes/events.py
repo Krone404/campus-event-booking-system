@@ -5,6 +5,7 @@ from sqlalchemy import select
 from ..extensions import db
 from ..models import Event, Booking
 from ..services.logging_service import log_event
+import uuid
 
 events_bp = Blueprint("events", __name__, url_prefix="/events")
 
@@ -92,7 +93,11 @@ def book_event(event_id: int):
         flash("Event is full.", "error")
         return redirect(url_for("events.list_events"))
 
-    booking = Booking(user_id=current_user.id, event_id=event_id)
+    booking = Booking(
+        user_id=current_user.id,
+        event_id=event_id,
+        ticket_code=str(uuid.uuid4())
+    )
     db.session.add(booking)
     try:
         db.session.commit()
@@ -101,7 +106,11 @@ def book_event(event_id: int):
         flash("You already booked this event.", "error")
         return redirect(url_for("events.list_events"))
 
-    log_event("booking_created", user_id=current_user.id, meta={"event_id": event_id})
+    log_event(
+        "booking_created",
+        user_id=current_user.id,
+        meta={"event_id": event_id, "booking_id": booking.id, "ticket_code": booking.ticket_code}
+    )
 
     flash("Booking confirmed.", "success")
     return redirect(url_for("events.list_events"))
