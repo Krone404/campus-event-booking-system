@@ -8,6 +8,7 @@ from flask import current_app
 from google.cloud import firestore
 
 _client: Optional[firestore.Client] = None
+_DISABLE = os.environ.get("DISABLE_FIRESTORE_LOGS") == "1"
 
 def _get_client() -> firestore.Client:
     global _client
@@ -25,12 +26,8 @@ def _get_client() -> firestore.Client:
     return _client
 
 def log_event(action: str, user_id: Optional[int] = None, meta: Optional[Dict[str, Any]] = None) -> None:
-    # Don't hit external services during tests
-    try:
-        if current_app and current_app.config.get("TESTING"):
-            return
-    except Exception:
-        pass
+    if _DISABLE:
+        return
 
     doc = {
         "action": action,
@@ -42,3 +39,4 @@ def log_event(action: str, user_id: Optional[int] = None, meta: Optional[Dict[st
         _get_client().collection("logs").add(doc)
     except Exception as e:
         print("Firestore logging failed:", repr(e))
+
