@@ -10,6 +10,7 @@ def create_app() -> Flask:
 
     db.init_app(app)
     login_manager.init_app(app)
+    csrf.init_app(app)
 
     @login_manager.user_loader
     def load_user(user_id: str):
@@ -39,5 +40,3 @@ def create_app() -> Flask:
         print("Database initialised.")
 
     return app
-
-csrf.init_app(app)
