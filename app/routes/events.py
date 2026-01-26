@@ -2,10 +2,12 @@ from datetime import datetime
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required, current_user
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from ..extensions import db
 from ..models import Event, Booking
 from ..services.logging_service import log_event
 import uuid
+
 
 events_bp = Blueprint("events", __name__, url_prefix="/events")
 
@@ -99,9 +101,10 @@ def book_event(event_id: int):
         ticket_code=str(uuid.uuid4())
     )
     db.session.add(booking)
+
     try:
         db.session.commit()
-    except Exception:
+    except IntegrityError:
         db.session.rollback()
         flash("You already booked this event.", "error")
         return redirect(url_for("events.list_events"))
