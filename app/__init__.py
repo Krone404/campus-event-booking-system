@@ -2,6 +2,7 @@ from flask import Flask, redirect, url_for
 from .config import Config
 from .extensions import db, login_manager
 from .models import User
+from .security import csrf
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -38,3 +39,5 @@ def create_app() -> Flask:
         print("Database initialised.")
 
     return app
+
+csrf.init_app(app)
