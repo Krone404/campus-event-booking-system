@@ -15,6 +15,7 @@
 
       {% if current_user.is_authenticated %}
         <form method="post" action="{{ url_for('events.book_event', event_id=e.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit">Book</button>
         </form>
       {% else %}

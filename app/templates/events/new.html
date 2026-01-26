@@ -3,6 +3,8 @@
 <h1>Create Event</h1>
 
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
   <label>Title</label><br>
   <input name="title" required><br><br>
 
