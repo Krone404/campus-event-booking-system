@@ -162,7 +162,7 @@ def create_event():
 @api_bp.post("/events/<int:event_id>/book")
 @login_required
 def book_event(event_id: int):
-    event = Event.query.get(event_id)
+    event = db.session.get(Event, event_id)
     if not event:
         return _not_found("Event not found")
 
