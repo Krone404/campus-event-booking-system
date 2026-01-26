@@ -59,12 +59,17 @@ def login_post():
 @auth_bp.get("/logout")
 @login_required
 def logout():
+    uid = current_user.id
     logout_user()
-    log_event("user_logout", user_id=current_user.id)
+    log_event("user_logout", user_id=uid)
     flash("Logged out.", "success")
     return redirect(url_for("home"))
 
+import os
+...
 @auth_bp.get("/me")
 @login_required
 def me():
-    return render_template("auth/me.html", db_uri=str(db.engine.url))
+    show_debug = (current_user.role == "admin") and (os.environ.get("SHOW_DEBUG") == "1")
+    db_uri = str(db.engine.url) if show_debug else None
+    return render_template("auth/me.html", db_uri=db_uri)

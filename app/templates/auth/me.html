@@ -13,13 +13,11 @@
     <li><strong>Authenticated:</strong> {{ current_user.is_authenticated }}</li>
   </ul>
 
-  <h2>Server Debug</h2>
+<h2>Server Debug</h2>
+{% if db_uri %}
   <ul>
     <li><strong>DB URI:</strong> {{ db_uri }}</li>
   </ul>
 {% else %}
-  <p><strong>Status:</strong> Not logged in</p>
-  <p><a href="/auth/login">Login</a></p>
+  <p><small>Debug info hidden.</small></p>
 {% endif %}
-
-{% endblock %}
