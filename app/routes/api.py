@@ -9,9 +9,17 @@ import uuid
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
+def _parse_iso_dt(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        # Supports "2026-02-01T10:00:00"
+        return datetime.fromisoformat(value)
+    raise ValueError("Invalid datetime format")
 
 def _iso(dt: Any) -> Optional[str]:
-    """Return ISO8601 string for datetime-like values, or pass through strings."""
     if dt is None:
         return None
     if isinstance(dt, str):
@@ -41,7 +49,6 @@ def _event_to_dict(event: Event) -> Dict[str, Any]:
 
 
 def _booking_to_dict(booking: Booking) -> Dict[str, Any]:
-    # ticket_code is optional (for later Cloud Function check-in feature)
     ticket_code = getattr(booking, "ticket_code", None)
     return {
         "id": booking.id,
@@ -107,10 +114,15 @@ def create_event():
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     location = (data.get("location") or "").strip()
-    start_time = data.get("start_time")
-    end_time = data.get("end_time")
     capacity = data.get("capacity")
     description = data.get("description")
+
+    try:
+        start_time = _parse_iso_dt(data.get("start_time"))
+        end_time = _parse_iso_dt(data.get("end_time"))
+    except Exception:
+        return _bad_request("start_time/end_time must be ISO8601 (e.g. 2026-02-01T10:00:00)")
+
 
     if not title:
         return _bad_request("title is required")
