@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
 from ..extensions import db
 from ..models import Event, Booking
+from ..security import csrf
 import uuid
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -104,7 +105,7 @@ def event_detail(event_id: int):
 
     return jsonify({"event": _event_to_dict(event)}), 200
 
-
+@csrf.exempt
 @api_bp.post("/events")
 @login_required
 def create_event():
@@ -157,7 +158,7 @@ def create_event():
 
     return jsonify({"event": _event_to_dict(event)}), 201
 
-
+@csrf.exempt
 @api_bp.post("/events/<int:event_id>/book")
 @login_required
 def book_event(event_id: int):
