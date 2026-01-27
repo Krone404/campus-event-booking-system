@@ -8,8 +8,17 @@
   <label>Title</label><br>
   <input name="title" required><br><br>
 
-  <label>Location</label><br>
-  <input name="location" required><br><br>
+  <label>Location (text label)</label><br>
+  <input name="location" required placeholder="e.g. Talbot Campus, Student Centre"><br><br>
+
+  <!-- NEW: lat/lng stored when admin clicks map -->
+  <input type="hidden" id="lat" name="lat">
+  <input type="hidden" id="lng" name="lng">
+
+  <label>Pick location on map</label><br>
+  <div id="map" style="width:100%; height:360px; border:1px solid #ccc;"></div>
+  <small id="pick-status">Click the map to drop a pin.</small>
+  <br><br>
 
   <label>Start time</label><br>
   <input type="datetime-local" name="start_time" required><br><br>
@@ -25,4 +34,41 @@
 
   <button type="submit">Create</button>
 </form>
+
+<!-- Google Maps JS API (note: needs Maps JavaScript API enabled) -->
+<script>
+  let map, marker;
+
+  function initMap() {
+    // Default centre (Bournemouth Uni-ish). Adjust if you want.
+    const start = { lat: 50.742, lng: -1.897 };
+
+    map = new google.maps.Map(document.getElementById("map"), {
+      center: start,
+      zoom: 15,
+    });
+
+    map.addListener("click", (e) => {
+      const lat = e.latLng.lat();
+      const lng = e.latLng.lng();
+
+      document.getElementById("lat").value = lat;
+      document.getElementById("lng").value = lng;
+      document.getElementById("pick-status").textContent =
+        `Selected: ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+      if (!marker) {
+        marker = new google.maps.Marker({ position: { lat, lng }, map });
+      } else {
+        marker.setPosition({ lat, lng });
+      }
+    });
+  }
+</script>
+
+<script
+  src="https://maps.googleapis.com/maps/api/js?key={{ maps_js_key }}&callback=initMap"
+  async
+  defer
+></script>
 {% endblock %}

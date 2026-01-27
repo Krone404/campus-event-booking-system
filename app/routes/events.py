@@ -43,7 +43,9 @@ def new_event():
     if current_user.role != "admin":
         flash("Admin only.", "error")
         return redirect(url_for("events.list_events"))
-    return render_template("events/new.html")
+
+    maps_js_key = os.environ.get("MAPS_API_KEY", "").strip()
+    return render_template("events/new.html", maps_js_key=maps_js_key)
 
 @events_bp.post("/new")
 @login_required
@@ -58,6 +60,12 @@ def new_event_post():
     end_time_raw = request.form.get("end_time") or ""
     capacity_raw = request.form.get("capacity") or "0"
     description = (request.form.get("description") or "").strip()
+
+    lat_raw = (request.form.get("lat") or "").strip()
+    lng_raw = (request.form.get("lng") or "").strip()
+
+    lat = None
+    lng = None
 
     if not title or not location or not start_time_raw or not end_time_raw:
         flash("Missing required fields.", "error")
@@ -79,10 +87,23 @@ def new_event_post():
         flash("End time must be after start time.", "error")
         return redirect(url_for("events.new_event"))
 
+        if lat_raw and lng_raw:
+            try:
+                lat = float(lat_raw)
+                lng = float(lng_raw)
+            except ValueError:
+                flash("Invalid map coordinates.", "error")
+                return redirect(url_for("events.new_event"))
+    else:
+        flash("Please pick a location on the map.", "error")
+        return redirect(url_for("events.new_event"))
+
     event = Event(
         title=title,
         description=description or None,
         location=location,
+        lat=lat,
+        lng=lng,
         start_time=start_time,
         end_time=end_time,
         capacity=capacity,
@@ -134,3 +155,17 @@ def book_event(event_id: int):
 
     flash("Booking confirmed.", "success")
     return redirect(url_for("events.list_events"))
+
+@events_bp.get("/<int:event_id>")
+def event_detail(event_id: int):
+    event = db.session.get(Event, event_id)
+    if not event:
+        flash("Event not found.", "error")
+        return redirect(url_for("events.list_events"))
+
+    maps_js_key = os.environ.get("MAPS_API_KEY", "").strip()
+    return render_template(
+        "events/detail.html",
+        event=event,
+        maps_js_key=maps_js_key,
+    )
