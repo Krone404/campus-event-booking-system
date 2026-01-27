@@ -1,22 +1,31 @@
+# app.yaml (skeleton)
 runtime: python312
 entrypoint: gunicorn -b :$PORT main:app
 
+# Environment variables (DO NOT commit real secrets; use placeholders or Secret Manager)
 env_variables:
-  # Flask / security
-  FLASK_SECRET_KEY: "change-me"          # generate a strong secret for production
-  SHOW_DEBUG: "0"                        # set to "1" only if you explicitly want debug info for admin
+  FLASK_SECRET_KEY: "REPLACE_ME"
 
-  # Database (Cloud SQL via Unix socket on App Engine)
-  CLOUD_SQL_CONNECTION_NAME: "PROJECT_ID:REGION:INSTANCE_NAME"
+  CLOUD_SQL_CONNECTION_NAME: "PROJECT:REGION:INSTANCE"
   DB_NAME: "campus_events"
   DB_USER: "appuser"
-  DB_PASS: "change-me"                  # secret
+  DB_PASS: "REPLACE_ME"
 
-  # Firestore (secondary DB for audit logs)
-  FIRESTORE_DB: "campus-events-fs"       # or leave blank to use default Firestore database
+  FIRESTORE_DB: "campus-events-fs"
+  SHOW_DEBUG: "0"
 
-  # Optional: disable Firestore writes (useful for tests / local runs)
-  DISABLE_FIRESTORE_LOGS: "0"
+  CHECKIN_FUNCTION_URL: "https://YOUR_CHECKIN_FUNCTION_URL"
+  CHECKIN_FUNCTION_SECRET: "REPLACE_ME"
+
+  QR_FUNCTION_URL: "https://YOUR_QR_FUNCTION_URL"
+  QR_FUNCTION_SECRET: "REPLACE_ME"
+
+  EMAIL_FUNCTION_URL: "https://YOUR_EMAIL_FUNCTION_URL"
+  EMAIL_FUNCTION_SECRET: "REPLACE_ME"
+  SENDGRID_FROM_EMAIL: "your-from-email@example.com"
+  SENDGRID_API_KEY: "REPLACE_ME"
+
+  MAPS_API_KEY: "REPLACE_ME"
 
 automatic_scaling:
   max_instances: 1

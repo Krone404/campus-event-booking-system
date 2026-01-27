@@ -5,12 +5,16 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
+from ..services.logging_service import log_event
 from ..extensions import db
-from ..models import Event, Booking
+from ..models import Event, Booking, User
 from ..security import csrf
 import uuid
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
+
+
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -80,6 +84,16 @@ def _forbidden(msg: str = "Forbidden"):
 def _not_found(msg: str = "Not found"):
     return jsonify({"error": "not_found", "message": msg}), 404
 
+def _id_token_for_audience(audience: str) -> str:
+    # Works on Google-managed runtimes (App Engine / Cloud Run / Functions) via metadata server
+    token_url = (
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+        f"?audience={quote_plus(audience)}&format=full"
+    )
+    req = urlrequest.Request(token_url, headers={"Metadata-Flavor": "Google"}, method="GET")
+    with urlrequest.urlopen(req, timeout=5) as resp:
+        return resp.read().decode("utf-8")
+
 def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     url = os.environ.get("CHECKIN_FUNCTION_URL")
     secret = os.environ.get("CHECKIN_FUNCTION_SECRET")
@@ -89,6 +103,8 @@ def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not secret:
         raise RuntimeError("CHECKIN_FUNCTION_SECRET not set")
 
+    token = _id_token_for_audience(url)
+
     body = json.dumps(payload).encode("utf-8")
     req = urlrequest.Request(
         url=url,
@@ -96,6 +112,7 @@ def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
         headers={
             "Content-Type": "application/json",
             "X-Checkin-Secret": secret,
+            "Authorization": f"Bearer {token}",
         },
         method="POST",
     )
@@ -118,11 +135,17 @@ def _call_qr_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not secret:
         raise RuntimeError("QR_FUNCTION_SECRET not set")
 
+    token = _id_token_for_audience(url)
+
     body = json.dumps(payload).encode("utf-8")
     req = urlrequest.Request(
         url=url,
         data=body,
-        headers={"Content-Type": "application/json", "X-QR-Secret": secret},
+        headers={
+            "Content-Type": "application/json",
+            "X-QR-Secret": secret,
+            "Authorization": f"Bearer {token}",
+        },
         method="POST",
     )
 
@@ -144,11 +167,17 @@ def _call_email_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not secret:
         raise RuntimeError("EMAIL_FUNCTION_SECRET not set")
 
+    token = _id_token_for_audience(url)
+
     body = json.dumps(payload).encode("utf-8")
     req = urlrequest.Request(
         url=url,
         data=body,
-        headers={"Content-Type": "application/json", "X-Email-Secret": secret},
+        headers={
+            "Content-Type": "application/json",
+            "X-Email-Secret": secret,
+            "Authorization": f"Bearer {token}",
+        },
         method="POST",
     )
 
@@ -311,14 +340,17 @@ def checkin_validate():
 
     return jsonify(result), 200
 
-@api_bp.get("/bookings/<int:booking_id>/qr")
+@api_bp.get("/bookings/ticket/<string:ticket_code>/qr")
 @login_required
-def booking_qr(booking_id: int):
-    booking = db.session.get(Booking, booking_id)
+def booking_qr_by_ticket(ticket_code: str):
+    ticket_code = (ticket_code or "").strip()
+    if not ticket_code:
+        return _bad_request("ticket_code is required")
+
+    booking = Booking.query.filter_by(ticket_code=ticket_code).first()
     if not booking:
         return _not_found("Booking not found")
 
-    # owner or admin
     if booking.user_id != current_user.id and not _is_admin():
         return _forbidden("Not allowed")
 
@@ -367,5 +399,16 @@ def email_booking_ticket(booking_id: int):
         })
     except Exception as e:
         return jsonify({"error": "email_error", "message": str(e)}), 502
+
+    log_event(
+        "ticket_email_sent",
+        user_id=current_user.id,
+        meta={
+            "booking_id": booking.id,
+            "event_id": booking.event_id,
+            "ticket_code": booking.ticket_code,
+            "to_email": user.email,
+        },
+    )
 
     return jsonify({"ok": True, "email_result": result}), 200
