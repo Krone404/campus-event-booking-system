@@ -1,3 +1,5 @@
+import os
+import uuid
 from datetime import datetime
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required, current_user
@@ -6,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from ..extensions import db
 from ..models import Event, Booking
 from ..services.logging_service import log_event
-import uuid
+from urllib.parse import quote_plus
 
 
 events_bp = Blueprint("events", __name__, url_prefix="/events")
@@ -19,6 +21,21 @@ def parse_dt(value: str):
 def list_events():
     events = db.session.scalars(select(Event).order_by(Event.start_time.asc())).all()
     return render_template("events/list.html", events=events)
+
+@events_bp.get("/<int:event_id>")
+def event_detail(event_id: int):
+    event = db.session.get(Event, event_id)
+    if not event:
+        flash("Event not found.", "error")
+        return redirect(url_for("events.list_events"))
+
+    api_key = os.environ.get("MAPS_API_KEY", "").strip()
+    maps_embed_url = None
+    if api_key:
+        q = quote_plus(event.location)
+        maps_embed_url = f"https://www.google.com/maps/embed/v1/place?key={api_key}&q={q}"
+
+    return render_template("events/detail.html", event=event, maps_embed_url=maps_embed_url)
 
 @events_bp.get("/new")
 @login_required

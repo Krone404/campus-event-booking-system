@@ -9,7 +9,9 @@
 <ul>
   {% for e in events %}
     <li>
-      <strong>{{ e.title }}</strong> — {{ e.location }}<br>
+      <strong>
+        <a href="{{ url_for('events.event_detail', event_id=e.id) }}">{{ e.title }}</a>
+      </strong> — {{ e.location }}<br>
       {{ e.start_time }} to {{ e.end_time }}<br>
       Capacity: {{ e.capacity }}<br>
 

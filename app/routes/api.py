@@ -109,6 +109,58 @@ def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
     except URLError as e:
         raise RuntimeError(f"Function unreachable: {e}")
 
+def _call_qr_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("QR_FUNCTION_URL")
+    secret = os.environ.get("QR_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("QR_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("QR_FUNCTION_SECRET not set")
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={"Content-Type": "application/json", "X-QR-Secret": secret},
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"QR Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"QR Function unreachable: {e}")
+
+def _call_email_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("EMAIL_FUNCTION_URL")
+    secret = os.environ.get("EMAIL_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("EMAIL_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("EMAIL_FUNCTION_SECRET not set")
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={"Content-Type": "application/json", "X-Email-Secret": secret},
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Email Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"Email Function unreachable: {e}")
+
 @api_bp.get("/me")
 def me():
     if not current_user.is_authenticated:
@@ -258,3 +310,62 @@ def checkin_validate():
         return jsonify({"error": "function_error", "message": str(e)}), 502
 
     return jsonify(result), 200
+
+@api_bp.get("/bookings/<int:booking_id>/qr")
+@login_required
+def booking_qr(booking_id: int):
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return _not_found("Booking not found")
+
+    # owner or admin
+    if booking.user_id != current_user.id and not _is_admin():
+        return _forbidden("Not allowed")
+
+    try:
+        result = _call_qr_function({"ticket_code": booking.ticket_code})
+    except Exception as e:
+        return jsonify({"error": "function_error", "message": str(e)}), 502
+
+    return jsonify(result), 200
+
+@api_bp.post("/bookings/<int:booking_id>/email")
+@login_required
+def email_booking_ticket(booking_id: int):
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return _not_found("Booking not found")
+
+    if booking.user_id != current_user.id and not _is_admin():
+        return _forbidden("Not allowed")
+
+    # generate QR first
+    try:
+        qr = _call_qr_function({"ticket_code": booking.ticket_code})
+    except Exception as e:
+        return jsonify({"error": "qr_error", "message": str(e)}), 502
+
+    # simple email body
+    html = f"""
+    <h1>Your booking</h1>
+    <p>Event ID: {booking.event_id}</p>
+    <p>Ticket code: <strong>{booking.ticket_code}</strong></p>
+    <p>Your QR code is attached.</p>
+    """
+
+    # look up the user's email
+    user = db.session.get(User, booking.user_id)
+    if not user:
+        return _not_found("User not found")
+
+    try:
+        result = _call_email_function({
+            "to_email": user.email,
+            "subject": "Your Campus Event Ticket",
+            "html": html,
+            "qr_png_base64": qr.get("png_base64", ""),
+        })
+    except Exception as e:
+        return jsonify({"error": "email_error", "message": str(e)}), 502
+
+    return jsonify({"ok": True, "email_result": result}), 200
