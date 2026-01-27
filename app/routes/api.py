@@ -1,4 +1,6 @@
 from __future__ import annotations
+import os
+import json
 from datetime import datetime
 from typing import Any, Dict, Optional
 from flask import Blueprint, jsonify, request
@@ -7,6 +9,9 @@ from ..extensions import db
 from ..models import Event, Booking
 from ..security import csrf
 import uuid
+from urllib import request as urlrequest
+from urllib.error import HTTPError, URLError
+
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -75,6 +80,34 @@ def _forbidden(msg: str = "Forbidden"):
 def _not_found(msg: str = "Not found"):
     return jsonify({"error": "not_found", "message": msg}), 404
 
+def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("CHECKIN_FUNCTION_URL")
+    secret = os.environ.get("CHECKIN_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("CHECKIN_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("CHECKIN_FUNCTION_SECRET not set")
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Checkin-Secret": secret,
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"Function unreachable: {e}")
 
 @api_bp.get("/me")
 def me():
@@ -207,3 +240,21 @@ def my_bookings():
             for b in bookings
         ]
     }), 200
+
+@csrf.exempt
+@api_bp.post("/checkin/validate")
+@login_required
+def checkin_validate():
+    data = request.get_json(silent=True) or {}
+    ticket_code = (data.get("ticket_code") or "").strip()
+    event_id = data.get("event_id")
+
+    if not ticket_code or event_id is None:
+        return _bad_request("ticket_code and event_id are required")
+
+    try:
+        result = _call_checkin_function({"ticket_code": ticket_code, "event_id": int(event_id)})
+    except Exception as e:
+        return jsonify({"error": "function_error", "message": str(e)}), 502
+
+    return jsonify(result), 200
