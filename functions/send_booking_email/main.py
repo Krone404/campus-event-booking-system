@@ -31,11 +31,11 @@ def send_booking_email(request):
         return _json(400, {"error": "bad_request", "message": "qr_png_base64 is required"})
 
     api_key = os.environ.get("SENDGRID_API_KEY", "")
-    from_email = os.environ.get("FROM_EMAIL", "")
+    SENDGRID_FROM_EMAIL = os.environ.get("SENDGRID_FROM_EMAIL", "")
     if not api_key:
         return _json(500, {"error": "server_error", "message": "SENDGRID_API_KEY not set"})
     if not from_email:
-        return _json(500, {"error": "server_error", "message": "FROM_EMAIL not set"})
+        return _json(500, {"error": "server_error", "message": "SENDGRID_FROM_EMAIL not set"})
 
     # Inline image: reference this in HTML as <img src="cid:ticketqr" />
     if "cid:ticketqr" not in html:
@@ -43,7 +43,7 @@ def send_booking_email(request):
 
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": from_email},
+        "from": {"email": SENDGRID_FROM_EMAIL},
         "subject": subject,
         "content": [
             {"type": "text/plain", "value": "Your ticket is attached (QR code)."},

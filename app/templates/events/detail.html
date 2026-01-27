@@ -23,30 +23,41 @@
 
 {% if maps_js_key and event.lat is not none and event.lng is not none %}
   <h2>Map</h2>
-  <div id="map" style="width:100%; height:360px; border:1px solid #ccc;"></div>
+<div
+  id="map"
+  data-lat="{{ event.lat or '' }}"
+  data-lng="{{ event.lng or '' }}"
+  style="width:100%;height:360px;"
+></div>
 
-  <script>
-    function initMap() {
-      const pos = { lat: {{ event.lat }}, lng: {{ event.lng }} };
+<script>
+  function initMap() {
+    const el = document.getElementById("map");
+    const latStr = el.dataset.lat;
+    const lngStr = el.dataset.lng;
 
-      const map = new google.maps.Map(document.getElementById("map"), {
-        center: pos,
-        zoom: 16,
-      });
-
-      new google.maps.Marker({
-        position: pos,
-        map: map,
-        title: "{{ event.title|e }}",
-      });
+    if (!latStr || !lngStr) {
+      el.innerHTML = "<small>Map location not set for this event.</small>";
+      return;
     }
-  </script>
 
-  <script
-    src="https://maps.googleapis.com/maps/api/js?key={{ maps_js_key }}&callback=initMap"
-    async
-    defer
-  ></script>
+    const pos = { lat: Number(latStr), lng: Number(lngStr) };
+
+    const map = new google.maps.Map(el, {
+      center: pos,
+      zoom: 16,
+    });
+
+    new google.maps.Marker({ position: pos, map });
+  }
+</script>
+
+<script
+  async
+  defer
+  src="https://maps.googleapis.com/maps/api/js?key={{ maps_js_api_key }}&callback=initMap">
+</script>
+
 {% else %}
   <p><small>Map not available (missing MAPS_API_KEY or event coordinates).</small></p>
 {% endif %}

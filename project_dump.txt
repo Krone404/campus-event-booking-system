@@ -1,0 +1,1941 @@
+--- ./tests/base.py ---
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from app import create_app
+from app.extensions import db
+from app.models import User, Event
+
+
+class BaseTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app({
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "WTF_CSRF_ENABLED": False,
+            "SECRET_KEY": "test-secret",
+        })
+        self.client = self.app.test_client()
+
+        with self.app.app_context():
+            db.create_all()
+
+            # Seed users
+            self.user = User(email="user@test.com", role="user")
+            self.user.set_password("pass")
+
+            self.admin = User(email="admin@test.com", role="admin")
+            self.admin.set_password("pass")
+
+            db.session.add_all([self.user, self.admin])
+            db.session.commit()
+
+            # Seed an event created by admin
+            start = datetime.now(timezone.utc).replace(microsecond=0)
+            end = start + timedelta(hours=1)
+
+            event = Event(
+                title="Seed Event",
+                location="BU",
+                start_time=start,
+                end_time=end,
+                capacity=5,
+                created_by=self.admin.id,
+            )
+            db.session.add(event)
+            db.session.commit()
+
+            self.event_id = event.id
+
+    def tearDown(self):
+        with self.app.app_context():
+            db.drop_all()
+
+    def login_user(self):
+        return self.client.post(
+            "/auth/login",
+            data={"email": "user@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+
+    def login_admin(self):
+        return self.client.post(
+            "/auth/login",
+            data={"email": "admin@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+
+    def logout(self):
+        return self.client.get("/auth/logout", follow_redirects=True)
+
+--- ./tests/__init__.py ---
+# Makes tests a package so imports like `from tests.base import BaseTestCase` work.
+
+--- ./tests/test_auth.py ---
+from app.extensions import db
+from app.models import User
+from tests.base import BaseTestCase
+
+
+class AuthTests(BaseTestCase):
+    def test_register_and_login(self):
+        # Register a new user
+        r = self.client.post(
+            "/auth/register",
+            data={"email": "new@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+        self.assertEqual(r.status_code, 200)
+
+        with self.app.app_context():
+            u = db.session.query(User).filter_by(email="new@test.com").first()
+            self.assertIsNotNone(u)
+
+        # Logout then login again
+        self.logout()
+
+        r2 = self.client.post(
+            "/auth/login",
+            data={"email": "new@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+        self.assertEqual(r2.status_code, 200)
+
+    def test_login_rejects_bad_password(self):
+        r = self.client.post(
+            "/auth/login",
+            data={"email": "user@test.com", "password": "wrong"},
+            follow_redirects=True,
+        )
+        self.assertEqual(r.status_code, 200)  # page renders with flash error
+
+--- ./tests/test_booking.py ---
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from app import create_app
+from app.extensions import db
+from app.models import User, Event, Booking
+
+
+class BookingTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app({
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "WTF_CSRF_ENABLED": False,
+            "SECRET_KEY": "test-secret",
+        })
+        self.client = self.app.test_client()
+
+        with self.app.app_context():
+            db.create_all()
+
+            user = User(email="user@test.com", role="user")
+            user.set_password("pass")
+
+            admin = User(email="admin@test.com", role="admin")
+            admin.set_password("pass")
+
+            db.session.add_all([user, admin])
+            db.session.commit()
+
+            start = datetime.now(timezone.utc).replace(microsecond=0)
+            end = start + timedelta(hours=1)
+
+            event = Event(
+                title="Bookable",
+                location="BU",
+                start_time=start,
+                end_time=end,
+                capacity=1,
+                created_by=admin.id,
+            )
+            db.session.add(event)
+            db.session.commit()
+
+            self.event_id = event.id
+
+    def tearDown(self):
+        with self.app.app_context():
+            db.drop_all()
+
+    def _login_user(self):
+        return self.client.post(
+            "/auth/login",
+            data={"email": "user@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+
+    def test_double_booking_prevented(self):
+        self._login_user()
+
+        r1 = self.client.post(f"/events/{self.event_id}/book", follow_redirects=True)
+        self.assertEqual(r1.status_code, 200)
+
+        r2 = self.client.post(f"/events/{self.event_id}/book", follow_redirects=True)
+        self.assertEqual(r2.status_code, 200)
+
+        with self.app.app_context():
+            count = db.session.query(Booking).filter_by(event_id=self.event_id).count()
+            self.assertEqual(count, 1)
+
+    def test_capacity_full_blocks_second_user(self):
+        # user 1 books (fills capacity 1)
+        self._login_user()
+        r1 = self.client.post(f"/events/{self.event_id}/book", follow_redirects=True)
+        self.assertEqual(r1.status_code, 200)
+
+        # log out user 1
+        self.client.get("/auth/logout", follow_redirects=True)
+
+        # create + login user 2
+        with self.app.app_context():
+            user2 = User(email="user2@test.com", role="user")
+            user2.set_password("pass")
+            db.session.add(user2)
+            db.session.commit()
+
+        self.client.post(
+            "/auth/login",
+            data={"email": "user2@test.com", "password": "pass"},
+            follow_redirects=True,
+        )
+
+        # user 2 tries to book -> should not create booking
+        r2 = self.client.post(f"/events/{self.event_id}/book", follow_redirects=True)
+        self.assertEqual(r2.status_code, 200)
+
+        with self.app.app_context():
+            total = db.session.query(Booking).filter_by(event_id=self.event_id).count()
+            self.assertEqual(total, 1)
+
+--- ./tests/test_api.py ---
+from datetime import datetime, timedelta, timezone
+
+from app.extensions import db
+from app.models import Event
+from tests.base import BaseTestCase
+
+
+class ApiTests(BaseTestCase):
+    def test_list_events(self):
+        r = self.client.get("/api/events")
+        self.assertEqual(r.status_code, 200)
+
+        data = r.get_json()
+        self.assertIn("events", data)
+        self.assertGreaterEqual(len(data["events"]), 1)
+
+    def test_create_event_admin_only(self):
+        # logged in as normal user
+        self.login_user()
+
+        start = datetime.now(timezone.utc).replace(microsecond=0)
+        end = start + timedelta(hours=1)
+
+        payload = {
+            "title": "Nope",
+            "location": "BU",
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "capacity": 10,
+            "description": "test",
+        }
+
+        r = self.client.post("/api/events", json=payload)
+        self.assertEqual(r.status_code, 403)
+
+    def test_create_event_admin_success(self):
+        self.login_admin()
+
+        start = datetime.now(timezone.utc).replace(microsecond=0)
+        end = start + timedelta(hours=1)
+
+        payload = {
+            "title": "Admin Created",
+            "location": "BU",
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "capacity": 10,
+            "description": "test",
+        }
+
+        r = self.client.post("/api/events", json=payload)
+        self.assertEqual(r.status_code, 201)
+
+        data = r.get_json()
+        self.assertIn("event", data)
+        self.assertEqual(data["event"]["title"], "Admin Created")
+
+        with self.app.app_context():
+            created = db.session.query(Event).filter_by(title="Admin Created").first()
+            self.assertIsNotNone(created)
+
+    def test_api_booking_and_prevent_double_booking(self):
+        self.login_user()
+
+        r1 = self.client.post(f"/api/events/{self.event_id}/book")
+        self.assertEqual(r1.status_code, 201)
+
+        # second booking should conflict
+        r2 = self.client.post(f"/api/events/{self.event_id}/book")
+        self.assertEqual(r2.status_code, 409)
+
+    def test_my_bookings_returns_event_details(self):
+        self.login_user()
+
+        r1 = self.client.post(f"/api/events/{self.event_id}/book")
+        self.assertEqual(r1.status_code, 201)
+
+        r2 = self.client.get("/api/bookings")
+        self.assertEqual(r2.status_code, 200)
+
+        data = r2.get_json()
+        self.assertIn("bookings", data)
+        self.assertGreaterEqual(len(data["bookings"]), 1)
+        self.assertIn("event", data["bookings"][0])
+        self.assertEqual(data["bookings"][0]["event"]["id"], self.event_id)
+
+--- ./.gitignore ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+#   For a library or package, you might want to ignore these files since the code is
+#   intended to run in multiple environments; otherwise, check them in:
+# .python-version
+
+# pipenv
+#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
+#   However, in case of collaboration, if having platform-specific dependencies or dependencies
+#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   install all needed dependencies.
+#Pipfile.lock
+
+# UV
+#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+#uv.lock
+
+# poetry
+#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+#poetry.lock
+#poetry.toml
+
+# pdm
+#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
+#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
+#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
+#pdm.lock
+#pdm.toml
+.pdm-python
+.pdm-build/
+
+# pixi
+#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
+#pixi.lock
+#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
+#   in the .venv directory. It is recommended not to include this directory in version control.
+.pixi
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
+#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
+#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
+#  and can be added to the global gitignore or merged into this file.  For a more nuclear
+#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
+#.idea/
+
+# Abstra
+# Abstra is an AI-powered process automation framework.
+# Ignore directories containing user credentials, local state, and settings.
+# Learn more at https://abstra.io/docs
+.abstra/
+
+# Visual Studio Code
+#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
+#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#  you could uncomment the following to ignore the entire vscode folder
+# .vscode/
+
+# Ruff stuff:
+.ruff_cache/
+
+# PyPI configuration file
+.pypirc
+
+# Cursor
+#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
+#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
+#  refer to https://docs.cursor.com/context/ignore-files
+.cursorignore
+.cursorindexingignore
+
+# Marimo
+marimo/_static/
+marimo/_lsp/
+__marimo__/
+
+app.yaml
+cloud-sql-proxy
+--- ./.gcloudignore ---
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore, with the addition of
+# "#!include" directives (which insert the entries of the given .gitignore-style
+# file at that point).
+#
+# For more information, run:
+#   $ gcloud topic gcloudignore
+#
+.gcloudignore
+# If you would like to upload your .git directory, .gitignore file or files
+# from your .gitignore file, remove the corresponding line
+# below:
+.git
+.gitignore
+
+# Python pycache:
+__pycache__/
+# Ignored by the build system
+/setup.cfg
+--- ./app/templates/events/new.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>Create Event</h1>
+
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <label>Title</label><br>
+  <input name="title" required><br><br>
+
+  <label>Location</label><br>
+  <input name="location" required><br><br>
+
+  <label>Start time</label><br>
+  <input type="datetime-local" name="start_time" required><br><br>
+
+  <label>End time</label><br>
+  <input type="datetime-local" name="end_time" required><br><br>
+
+  <label>Capacity</label><br>
+  <input type="number" name="capacity" min="1" required><br><br>
+
+  <label>Description</label><br>
+  <textarea name="description"></textarea><br><br>
+
+  <button type="submit">Create</button>
+</form>
+{% endblock %}
+
+--- ./app/templates/events/list.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>Events</h1>
+
+{% if current_user.is_authenticated and current_user.role == "admin" %}
+  <p><a href="{{ url_for('events.new_event') }}">Create new event</a></p>
+{% endif %}
+
+<ul>
+  {% for e in events %}
+    <li>
+      <strong>
+        <a href="{{ url_for('events.event_detail', event_id=e.id) }}">{{ e.title }}</a>
+      </strong> — {{ e.location }}<br>
+      {{ e.start_time }} to {{ e.end_time }}<br>
+      Capacity: {{ e.capacity }}<br>
+
+      {% if current_user.is_authenticated %}
+        <form method="post" action="{{ url_for('events.book_event', event_id=e.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit">Book</button>
+        </form>
+      {% else %}
+        <small><a href="/auth/login">Login</a> to book</small>
+      {% endif %}
+    </li>
+    <hr>
+  {% else %}
+    <li>No events yet.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
+
+--- ./app/templates/events/detail.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ event.title }}</h1>
+
+<p><strong>Location:</strong> {{ event.location }}</p>
+<p><strong>Time:</strong> {{ event.start_time }} to {{ event.end_time }}</p>
+<p><strong>Capacity:</strong> {{ event.capacity }}</p>
+
+{% if event.description %}
+  <p><strong>Description:</strong><br>{{ event.description }}</p>
+{% endif %}
+
+{% if current_user.is_authenticated %}
+  <form method="post" action="{{ url_for('events.book_event', event_id=event.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Book</button>
+  </form>
+{% else %}
+  <small><a href="/auth/login">Login</a> to book</small>
+{% endif %}
+
+<hr>
+
+{% if maps_embed_url %}
+  <h2>Map</h2>
+  <iframe
+    width="100%"
+    height="360"
+    style="border:0"
+    loading="lazy"
+    referrerpolicy="no-referrer-when-downgrade"
+    src="{{ maps_embed_url }}">
+  </iframe>
+{% else %}
+  <p><small>Map not available (MAPS_API_KEY not set).</small></p>
+{% endif %}
+
+{% endblock %}
+
+--- ./app/templates/auth/register.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>Register</h1>
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <label>Email</label><br>
+  <input name="email" type="email" required><br><br>
+
+  <label>Password</label><br>
+  <input name="password" type="password" required><br><br>
+
+  <button type="submit">Create account</button>
+</form>
+{% endblock %}
+
+--- ./app/templates/auth/login.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>Login</h1>
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <label>Email</label><br>
+  <input name="email" type="email" required><br><br>
+
+  <label>Password</label><br>
+  <input name="password" type="password" required><br><br>
+
+  <button type="submit">Login</button>
+</form>
+{% endblock %}
+
+--- ./app/templates/auth/me.html ---
+{% extends "base.html" %}
+{% block content %}
+<h1>My Account</h1>
+
+{% if current_user.is_authenticated %}
+  <p><strong>Status:</strong> Logged in</p>
+
+  <h2>User</h2>
+  <ul>
+    <li><strong>ID:</strong> {{ current_user.id }}</li>
+    <li><strong>Email:</strong> {{ current_user.email }}</li>
+    <li><strong>Role:</strong> {{ current_user.role }}</li>
+    <li><strong>Authenticated:</strong> {{ current_user.is_authenticated }}</li>
+  </ul>
+
+  <h2>Server Debug</h2>
+  {% if db_uri %}
+    <ul>
+      <li><strong>DB URI:</strong> {{ db_uri }}</li>
+    </ul>
+  {% else %}
+    <p><small>Debug info hidden.</small></p>
+  {% endif %}
+
+{% else %}
+  <p><strong>Status:</strong> Not logged in</p>
+  <p><a href="/auth/login">Login</a></p>
+{% endif %}
+
+{% endblock %}
+
+--- ./app/templates/base.html ---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Campus Events</title>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a> |
+    <a href="/events/">Events</a> |
+
+    {% if current_user.is_authenticated %}
+      <a href="/auth/me">Me</a> |
+      <a href="/auth/logout">Logout</a>
+    {% else %}
+      <a href="/auth/register">Register</a> |
+      <a href="/auth/login">Login</a>
+    {% endif %}
+  </nav>
+
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul>
+        {% for category, message in messages %}
+          <li><strong>{{ category }}:</strong> {{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
+
+--- ./app/__init__.py ---
+from flask import Flask, redirect, url_for
+from typing import Optional, Dict, Any
+from .config import Config
+from .extensions import db, login_manager
+from .models import User
+from .security import csrf
+
+def create_app(config_overrides: Optional[Dict[str, Any]] = None) -> Flask:
+    app = Flask(__name__)
+    app.config.from_object(Config)
+
+    if config_overrides:
+        app.config.update(config_overrides)
+
+    db.init_app(app)
+    login_manager.init_app(app)
+    csrf.init_app(app)
+
+    @login_manager.user_loader
+    def load_user(user_id: str):
+        return db.session.get(User, int(user_id))
+
+    from .routes.auth import auth_bp
+    app.register_blueprint(auth_bp)
+
+    from .routes.events import events_bp
+    app.register_blueprint(events_bp)
+
+    from .routes.debug import debug_bp
+    app.register_blueprint(debug_bp)
+
+    from .routes.api import api_bp
+    app.register_blueprint(api_bp)
+
+    @app.get("/")
+    def home():
+        return redirect(url_for("events.list_events"))
+
+    @app.cli.command("init-db")
+    def init_db():
+        """Create tables if they don't exist."""
+        with app.app_context():
+            db.create_all()
+        print("Database initialised.")
+
+    return app
+
+--- ./app/routes/api.py ---
+from __future__ import annotations
+import os
+import json
+from datetime import datetime
+from typing import Any, Dict, Optional
+from flask import Blueprint, jsonify, request
+from flask_login import current_user, login_required
+from ..services.logging_service import log_event
+from ..extensions import db
+from ..models import Event, Booking, User
+from ..security import csrf
+import uuid
+from urllib import request as urlrequest
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
+
+
+
+
+api_bp = Blueprint("api", __name__, url_prefix="/api")
+
+def _parse_iso_dt(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        # Supports "2026-02-01T10:00:00"
+        return datetime.fromisoformat(value)
+    raise ValueError("Invalid datetime format")
+
+def _iso(dt: Any) -> Optional[str]:
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        return dt
+    if isinstance(dt, datetime):
+        return dt.isoformat()
+    return str(dt)
+
+
+def _event_to_dict(event: Event) -> Dict[str, Any]:
+    booked = Booking.query.filter_by(event_id=event.id).count()
+    remaining = max(int(event.capacity) - booked, 0) if event.capacity is not None else None
+
+    return {
+        "id": event.id,
+        "title": event.title,
+        "description": event.description,
+        "location": event.location,
+        "start_time": _iso(event.start_time),
+        "end_time": _iso(event.end_time),
+        "capacity": event.capacity,
+        "booked": booked,
+        "remaining": remaining,
+        "created_by": event.created_by,
+        "created_at": _iso(event.created_at),
+    }
+
+
+def _booking_to_dict(booking: Booking) -> Dict[str, Any]:
+    ticket_code = getattr(booking, "ticket_code", None)
+    return {
+        "id": booking.id,
+        "user_id": booking.user_id,
+        "event_id": booking.event_id,
+        "ticket_code": ticket_code,
+        "created_at": _iso(booking.created_at),
+    }
+
+
+def _is_admin() -> bool:
+    return bool(getattr(current_user, "role", None) == "admin")
+
+
+def _bad_request(msg: str):
+    return jsonify({"error": "bad_request", "message": msg}), 400
+
+
+def _forbidden(msg: str = "Forbidden"):
+    return jsonify({"error": "forbidden", "message": msg}), 403
+
+
+def _not_found(msg: str = "Not found"):
+    return jsonify({"error": "not_found", "message": msg}), 404
+
+def _id_token_for_audience(audience: str) -> str:
+    # Works on Google-managed runtimes (App Engine / Cloud Run / Functions) via metadata server
+    token_url = (
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+        f"?audience={quote_plus(audience)}&format=full"
+    )
+    req = urlrequest.Request(token_url, headers={"Metadata-Flavor": "Google"}, method="GET")
+    with urlrequest.urlopen(req, timeout=5) as resp:
+        return resp.read().decode("utf-8")
+
+def _call_checkin_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("CHECKIN_FUNCTION_URL")
+    secret = os.environ.get("CHECKIN_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("CHECKIN_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("CHECKIN_FUNCTION_SECRET not set")
+
+    token = _id_token_for_audience(url)
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Checkin-Secret": secret,
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"Function unreachable: {e}")
+
+def _call_qr_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("QR_FUNCTION_URL")
+    secret = os.environ.get("QR_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("QR_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("QR_FUNCTION_SECRET not set")
+
+    token = _id_token_for_audience(url)
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-QR-Secret": secret,
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"QR Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"QR Function unreachable: {e}")
+
+def _call_email_function(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = os.environ.get("EMAIL_FUNCTION_URL")
+    secret = os.environ.get("EMAIL_FUNCTION_SECRET")
+
+    if not url:
+        raise RuntimeError("EMAIL_FUNCTION_URL not set")
+    if not secret:
+        raise RuntimeError("EMAIL_FUNCTION_SECRET not set")
+
+    token = _id_token_for_audience(url)
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url=url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Email-Secret": secret,
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Email Function HTTP {e.code}: {raw[:200]}")
+    except URLError as e:
+        raise RuntimeError(f"Email Function unreachable: {e}")
+
+@api_bp.get("/me")
+def me():
+    if not current_user.is_authenticated:
+        return jsonify({"authenticated": False}), 200
+
+    return jsonify({
+        "authenticated": True,
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "role": getattr(current_user, "role", "user"),
+        }
+    }), 200
+
+
+@api_bp.get("/events")
+def list_events():
+    events = Event.query.order_by(Event.start_time.asc()).all()
+    return jsonify({"events": [_event_to_dict(e) for e in events]}), 200
+
+
+@api_bp.get("/events/<int:event_id>")
+def event_detail(event_id: int):
+    event = Event.query.get(event_id)
+    if not event:
+        return _not_found("Event not found")
+
+    return jsonify({"event": _event_to_dict(event)}), 200
+
+@csrf.exempt
+@api_bp.post("/events")
+@login_required
+def create_event():
+    if not _is_admin():
+        return _forbidden("Admin only")
+
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    location = (data.get("location") or "").strip()
+    capacity = data.get("capacity")
+    description = data.get("description")
+
+    try:
+        start_time = _parse_iso_dt(data.get("start_time"))
+        end_time = _parse_iso_dt(data.get("end_time"))
+    except Exception:
+        return _bad_request("start_time/end_time must be ISO8601 (e.g. 2026-02-01T10:00:00)")
+
+
+    if not title:
+        return _bad_request("title is required")
+    if not location:
+        return _bad_request("location is required")
+    if not start_time:
+        return _bad_request("start_time is required")
+    if not end_time:
+        return _bad_request("end_time is required")
+    if capacity is None:
+        return _bad_request("capacity is required")
+
+    try:
+        capacity_int = int(capacity)
+        if capacity_int <= 0:
+            return _bad_request("capacity must be > 0")
+    except Exception:
+        return _bad_request("capacity must be an integer")
+
+    event = Event(
+        title=title,
+        description=description,
+        location=location,
+        start_time=start_time,
+        end_time=end_time,
+        capacity=capacity_int,
+        created_by=current_user.id,
+    )
+
+    db.session.add(event)
+    db.session.commit()
+
+    return jsonify({"event": _event_to_dict(event)}), 201
+
+@csrf.exempt
+@api_bp.post("/events/<int:event_id>/book")
+@login_required
+def book_event(event_id: int):
+    event = db.session.get(Event, event_id)
+    if not event:
+        return _not_found("Event not found")
+
+    # Prevent double booking
+    existing = Booking.query.filter_by(event_id=event_id, user_id=current_user.id).first()
+    if existing:
+        return jsonify({"error": "conflict", "message": "Already booked", "booking": _booking_to_dict(existing)}), 409
+
+    # Capacity check
+    booked = Booking.query.filter_by(event_id=event_id).count()
+    if event.capacity is not None and booked >= int(event.capacity):
+        return jsonify({"error": "conflict", "message": "Event is full"}), 409
+
+    booking = Booking(
+        user_id=current_user.id,
+        event_id=event_id,
+        ticket_code=str(uuid.uuid4())
+    )
+
+    db.session.add(booking)
+    db.session.commit()
+
+    return jsonify({"booking": _booking_to_dict(booking)}), 201
+
+
+@api_bp.get("/bookings")
+@login_required
+def my_bookings():
+    bookings = Booking.query.filter_by(user_id=current_user.id).order_by(Booking.created_at.desc()).all()
+
+    # Include event details for convenience
+    event_ids = {b.event_id for b in bookings}
+    events = Event.query.filter(Event.id.in_(event_ids)).all() if event_ids else []
+    event_map = {e.id: _event_to_dict(e) for e in events}
+
+    return jsonify({
+        "bookings": [
+            {
+                **_booking_to_dict(b),
+                "event": event_map.get(b.event_id),
+            }
+            for b in bookings
+        ]
+    }), 200
+
+@csrf.exempt
+@api_bp.post("/checkin/validate")
+@login_required
+def checkin_validate():
+    data = request.get_json(silent=True) or {}
+    ticket_code = (data.get("ticket_code") or "").strip()
+    event_id = data.get("event_id")
+
+    if not ticket_code or event_id is None:
+        return _bad_request("ticket_code and event_id are required")
+
+    try:
+        result = _call_checkin_function({"ticket_code": ticket_code, "event_id": int(event_id)})
+    except Exception as e:
+        return jsonify({"error": "function_error", "message": str(e)}), 502
+
+    return jsonify(result), 200
+
+@api_bp.get("/bookings/ticket/<string:ticket_code>/qr")
+@login_required
+def booking_qr_by_ticket(ticket_code: str):
+    ticket_code = (ticket_code or "").strip()
+    if not ticket_code:
+        return _bad_request("ticket_code is required")
+
+    booking = Booking.query.filter_by(ticket_code=ticket_code).first()
+    if not booking:
+        return _not_found("Booking not found")
+
+    if booking.user_id != current_user.id and not _is_admin():
+        return _forbidden("Not allowed")
+
+    try:
+        result = _call_qr_function({"ticket_code": booking.ticket_code})
+    except Exception as e:
+        return jsonify({"error": "function_error", "message": str(e)}), 502
+
+    return jsonify(result), 200
+
+@api_bp.post("/bookings/<int:booking_id>/email")
+@login_required
+def email_booking_ticket(booking_id: int):
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return _not_found("Booking not found")
+
+    if booking.user_id != current_user.id and not _is_admin():
+        return _forbidden("Not allowed")
+
+    # generate QR first
+    try:
+        qr = _call_qr_function({"ticket_code": booking.ticket_code})
+    except Exception as e:
+        return jsonify({"error": "qr_error", "message": str(e)}), 502
+
+    # simple email body
+    html = f"""
+    <h1>Your booking</h1>
+    <p>Event ID: {booking.event_id}</p>
+    <p>Ticket code: <strong>{booking.ticket_code}</strong></p>
+    <p>Your QR code is attached.</p>
+    """
+
+    # look up the user's email
+    user = db.session.get(User, booking.user_id)
+    if not user:
+        return _not_found("User not found")
+
+    try:
+        result = _call_email_function({
+            "to_email": user.email,
+            "subject": "Your Campus Event Ticket",
+            "html": html,
+            "qr_png_base64": qr.get("png_base64", ""),
+        })
+    except Exception as e:
+        return jsonify({"error": "email_error", "message": str(e)}), 502
+
+    log_event(
+        "ticket_email_sent",
+        user_id=current_user.id,
+        meta={
+            "booking_id": booking.id,
+            "event_id": booking.event_id,
+            "ticket_code": booking.ticket_code,
+            "to_email": user.email,
+        },
+    )
+
+    return jsonify({"ok": True, "email_result": result}), 200
+
+--- ./app/routes/debug.py ---
+from flask import Blueprint, jsonify
+from flask_login import current_user
+from ..services.logging_service import log_event
+
+debug_bp = Blueprint("debug", __name__, url_prefix="/debug")
+
+@debug_bp.get("/firestore")
+def firestore_test():
+    uid = current_user.id if current_user.is_authenticated else None
+    log_event("firestore_test", user_id=uid, meta={"source": "debug_route"})
+    return jsonify({"ok": True, "message": "Wrote firestore_test to logs"})
+
+--- ./app/routes/events.py ---
+import os
+import uuid
+from datetime import datetime
+from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask_login import login_required, current_user
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from ..extensions import db
+from ..models import Event, Booking
+from ..services.logging_service import log_event
+from urllib.parse import quote_plus
+
+
+events_bp = Blueprint("events", __name__, url_prefix="/events")
+
+def parse_dt(value: str):
+    # expects "YYYY-MM-DDTHH:MM" from <input type="datetime-local">
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M")
+
+@events_bp.get("/")
+def list_events():
+    events = db.session.scalars(select(Event).order_by(Event.start_time.asc())).all()
+    return render_template("events/list.html", events=events)
+
+@events_bp.get("/<int:event_id>")
+def event_detail(event_id: int):
+    event = db.session.get(Event, event_id)
+    if not event:
+        flash("Event not found.", "error")
+        return redirect(url_for("events.list_events"))
+
+    api_key = os.environ.get("MAPS_API_KEY", "").strip()
+    maps_embed_url = None
+    if api_key:
+        q = quote_plus(event.location)
+        maps_embed_url = f"https://www.google.com/maps/embed/v1/place?key={api_key}&q={q}"
+
+    return render_template("events/detail.html", event=event, maps_embed_url=maps_embed_url)
+
+@events_bp.get("/new")
+@login_required
+def new_event():
+    if current_user.role != "admin":
+        flash("Admin only.", "error")
+        return redirect(url_for("events.list_events"))
+    return render_template("events/new.html")
+
+@events_bp.post("/new")
+@login_required
+def new_event_post():
+    if current_user.role != "admin":
+        flash("Admin only.", "error")
+        return redirect(url_for("events.list_events"))
+
+    title = (request.form.get("title") or "").strip()
+    location = (request.form.get("location") or "").strip()
+    start_time_raw = request.form.get("start_time") or ""
+    end_time_raw = request.form.get("end_time") or ""
+    capacity_raw = request.form.get("capacity") or "0"
+    description = (request.form.get("description") or "").strip()
+
+    if not title or not location or not start_time_raw or not end_time_raw:
+        flash("Missing required fields.", "error")
+        return redirect(url_for("events.new_event"))
+
+    try:
+        capacity = int(capacity_raw)
+        start_time = parse_dt(start_time_raw)
+        end_time = parse_dt(end_time_raw)
+    except ValueError:
+        flash("Invalid date/time or capacity.", "error")
+        return redirect(url_for("events.new_event"))
+
+    if capacity <= 0:
+        flash("Capacity must be > 0.", "error")
+        return redirect(url_for("events.new_event"))
+
+    if end_time <= start_time:
+        flash("End time must be after start time.", "error")
+        return redirect(url_for("events.new_event"))
+
+    event = Event(
+        title=title,
+        description=description or None,
+        location=location,
+        start_time=start_time,
+        end_time=end_time,
+        capacity=capacity,
+        created_by=current_user.id,
+    )
+    db.session.add(event)
+    db.session.commit()
+
+    log_event("event_created", user_id=current_user.id, meta={"event_id": event.id, "title": event.title})
+
+    flash("Event created.", "success")
+    return redirect(url_for("events.list_events"))
+
+@events_bp.post("/<int:event_id>/book")
+@login_required
+def book_event(event_id: int):
+    event = db.session.get(Event, event_id)
+    if not event:
+        flash("Event not found.", "error")
+        return redirect(url_for("events.list_events"))
+
+    # capacity check
+    booked = db.session.scalar(
+        select(db.func.count(Booking.id)).where(Booking.event_id == event_id)
+    )
+    if booked >= event.capacity:
+        flash("Event is full.", "error")
+        return redirect(url_for("events.list_events"))
+
+    booking = Booking(
+        user_id=current_user.id,
+        event_id=event_id,
+        ticket_code=str(uuid.uuid4())
+    )
+    db.session.add(booking)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash("You already booked this event.", "error")
+        return redirect(url_for("events.list_events"))
+
+    log_event(
+        "booking_created",
+        user_id=current_user.id,
+        meta={"event_id": event_id, "booking_id": booking.id, "ticket_code": booking.ticket_code}
+    )
+
+    flash("Booking confirmed.", "success")
+    return redirect(url_for("events.list_events"))
+
+--- ./app/routes/auth.py ---
+from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask_login import login_user, logout_user, login_required, current_user
+from sqlalchemy import select
+from ..extensions import db
+from ..models import User
+from ..services.logging_service import log_event
+
+
+auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+
+@auth_bp.get("/register")
+def register():
+    return render_template("auth/register.html")
+
+@auth_bp.post("/register")
+def register_post():
+    email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+
+    if not email or not password:
+        flash("Email and password are required.", "error")
+        return redirect(url_for("auth.register"))
+
+    existing = db.session.scalar(select(User).where(User.email == email))
+    if existing:
+        flash("That email is already registered.", "error")
+        return redirect(url_for("auth.register"))
+
+    user = User(email=email)
+    user.set_password(password)
+
+    db.session.add(user)
+    db.session.commit()
+
+    login_user(user)
+    log_event("user_registered", user_id=user.id, meta={"email": user.email})
+    flash("Account created. You're logged in.", "success")
+    return redirect(url_for("auth.me"))
+
+@auth_bp.get("/login")
+def login():
+    return render_template("auth/login.html")
+
+@auth_bp.post("/login")
+def login_post():
+    email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+
+    user = db.session.scalar(select(User).where(User.email == email))
+    if not user or not user.check_password(password):
+        flash("Invalid email or password.", "error")
+        return redirect(url_for("auth.login"))
+
+    login_user(user)
+    log_event("user_login", user_id=user.id)
+    flash("Logged in.", "success")
+    return redirect(url_for("auth.me"))
+
+@auth_bp.get("/logout")
+@login_required
+def logout():
+    uid = current_user.id
+    logout_user()
+    log_event("user_logout", user_id=uid)
+    flash("Logged out.", "success")
+    return redirect(url_for("home"))
+
+import os
+...
+@auth_bp.get("/me")
+@login_required
+def me():
+    show_debug = (current_user.role == "admin") and (os.environ.get("SHOW_DEBUG") == "1")
+    db_uri = str(db.engine.url) if show_debug else None
+    return render_template("auth/me.html", db_uri=db_uri)
+
+--- ./app/models.py ---
+from datetime import datetime, timezone
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import UserMixin
+from .extensions import db
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+class User(db.Model, UserMixin):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(50), nullable=False, default="user")
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+
+    events = db.relationship("Event", back_populates="creator", cascade="all, delete-orphan")
+    bookings = db.relationship("Booking", back_populates="user", cascade="all, delete-orphan")
+
+    def set_password(self, password: str) -> None:
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        return check_password_hash(self.password_hash, password)
+
+class Event(db.Model):
+    __tablename__ = "events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    location = db.Column(db.String(200), nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    capacity = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    creator = db.relationship("User", back_populates="events")
+
+    bookings = db.relationship("Booking", back_populates="event", cascade="all, delete-orphan")
+
+    def booked_count(self) -> int:
+        return len(self.bookings)
+
+class Booking(db.Model):
+    __tablename__ = "bookings"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    event_id = db.Column(db.Integer, db.ForeignKey("events.id"), nullable=False, index=True)
+    
+    ticket_code = db.Column(db.String(64), unique=True, nullable=True, index=True)
+
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+
+    user = db.relationship("User", back_populates="bookings")
+    event = db.relationship("Event", back_populates="bookings")
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "event_id", name="uq_user_event_booking"),
+    )
+
+--- ./app/extensions.py ---
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
+
+db = SQLAlchemy()
+login_manager = LoginManager()
+login_manager.login_view = "auth.login"
+
+--- ./app/config.py ---
+import os
+
+class Config:
+    SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+    _DEFAULT_SQLITE = "sqlite:///local.db"
+
+    @staticmethod
+    def build_db_uri() -> str:
+        conn_name = os.environ.get("CLOUD_SQL_CONNECTION_NAME")
+        db_name = os.environ.get("DB_NAME")
+        db_user = os.environ.get("DB_USER")
+        db_pass = os.environ.get("DB_PASS")
+
+        # App Engine: connect via Cloud SQL unix socket
+        if conn_name and db_name and db_user and db_pass:
+            return (
+                f"postgresql+psycopg2://{db_user}:{db_pass}@/{db_name}"
+                f"?host=/cloudsql/{conn_name}"
+            )
+
+        # Local dev: DATABASE_URL (optional) or sqlite
+        return os.environ.get("DATABASE_URL", "sqlite:///local.db")
+
+    SQLALCHEMY_DATABASE_URI = build_db_uri.__func__()
+
+--- ./app/services/logging_service.py ---
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+import os
+
+from flask import current_app
+from google.cloud import firestore
+
+_client: Optional[firestore.Client] = None
+_DISABLE = os.environ.get("DISABLE_FIRESTORE_LOGS") == "1"
+
+def _get_client() -> firestore.Client:
+    global _client
+    if _client is None:
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
+        db_name = os.environ.get("FIRESTORE_DB")
+        if project and db_name:
+            _client = firestore.Client(project=project, database=db_name)
+        elif db_name:
+            _client = firestore.Client(database=db_name)
+        elif project:
+            _client = firestore.Client(project=project)
+        else:
+            _client = firestore.Client()
+    return _client
+
+def log_event(action: str, user_id: Optional[int] = None, meta: Optional[Dict[str, Any]] = None) -> None:
+    if _DISABLE:
+        return
+
+    doc = {
+        "action": action,
+        "user_id": user_id,
+        "meta": meta or {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _get_client().collection("logs").add(doc)
+    except Exception as e:
+        print("Firestore logging failed:", repr(e))
+
+
+--- ./app/security.py ---
+from flask_wtf.csrf import CSRFProtect
+
+csrf = CSRFProtect()
+
+--- ./README.md ---
+# campus-event-booking-system
+
+Promotes user to admin (Inside postgress sql query)
+
+SELECT id, email, role FROM users WHERE email='test@admin.com';
+UPDATE users SET role='admin' WHERE email='test@admin.com';
+SELECT id, email, role FROM users WHERE email='test@admin.com';
+
+--- ./requirements.txt ---
+Flask==3.0.3
+gunicorn==22.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+psycopg2-binary==2.9.9
+python-dotenv==1.0.1
+google-cloud-firestore==2.19.0
+Flask-WTF==1.2.1
+
+--- ./app.yaml.example ---
+# app.yaml (skeleton)
+runtime: python312
+entrypoint: gunicorn -b :$PORT main:app
+
+# Environment variables (DO NOT commit real secrets; use placeholders or Secret Manager)
+env_variables:
+  FLASK_SECRET_KEY: "REPLACE_ME"
+
+  CLOUD_SQL_CONNECTION_NAME: "PROJECT:REGION:INSTANCE"
+  DB_NAME: "campus_events"
+  DB_USER: "appuser"
+  DB_PASS: "REPLACE_ME"
+
+  FIRESTORE_DB: "campus-events-fs"
+  SHOW_DEBUG: "0"
+
+  CHECKIN_FUNCTION_URL: "https://YOUR_CHECKIN_FUNCTION_URL"
+  CHECKIN_FUNCTION_SECRET: "REPLACE_ME"
+
+  QR_FUNCTION_URL: "https://YOUR_QR_FUNCTION_URL"
+  QR_FUNCTION_SECRET: "REPLACE_ME"
+
+  EMAIL_FUNCTION_URL: "https://YOUR_EMAIL_FUNCTION_URL"
+  EMAIL_FUNCTION_SECRET: "REPLACE_ME"
+  SENDGRID_FROM_EMAIL: "your-from-email@example.com"
+  SENDGRID_API_KEY: "REPLACE_ME"
+
+  MAPS_API_KEY: "REPLACE_ME"
+
+automatic_scaling:
+  max_instances: 1
+
+--- ./functions/checkin_validate/requirements.txt ---
+functions-framework==3.7.0
+psycopg2-binary==2.9.9
+google-cloud-firestore==2.19.0
+
+--- ./functions/checkin_validate/main.py ---
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+import psycopg2
+from google.cloud import firestore
+
+
+def _json(status: int, payload: Dict[str, Any]) -> Tuple[str, int, Dict[str, str]]:
+    return (json.dumps(payload), status, {"Content-Type": "application/json"})
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
+
+
+def _get_pg_conn():
+    conn_name = _require_env("CLOUD_SQL_CONNECTION_NAME")
+    db_name = _require_env("DB_NAME")
+    db_user = _require_env("DB_USER")
+    db_pass = _require_env("DB_PASS")
+
+    # Cloud Functions (gen2) supports Cloud SQL via unix socket mount:
+    # host=/cloudsql/<PROJECT:REGION:INSTANCE>
+    return psycopg2.connect(
+        dbname=db_name,
+        user=db_user,
+        password=db_pass,
+        host=f"/cloudsql/{conn_name}",
+        connect_timeout=5,
+    )
+
+
+def _fs_client() -> firestore.Client:
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
+    db_name = os.environ.get("FIRESTORE_DB")
+    if project and db_name:
+        return firestore.Client(project=project, database=db_name)
+    if db_name:
+        return firestore.Client(database=db_name)
+    if project:
+        return firestore.Client(project=project)
+    return firestore.Client()
+
+
+def _log(action: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    if os.environ.get("DISABLE_FIRESTORE_LOGS") == "1":
+        return
+    doc = {
+        "action": action,
+        "meta": meta or {},
+        "created_at": _utc_iso(),
+        "source": "cloud_function",
+    }
+    try:
+        _fs_client().collection("logs").add(doc)
+    except Exception as e:
+        print("Firestore logging failed:", repr(e))
+
+
+def checkin_validate(request):
+    # Shared-secret header
+    expected = os.environ.get("CHECKIN_FUNCTION_SECRET", "")
+    provided = request.headers.get("X-Checkin-Secret", "")
+    if not expected or provided != expected:
+        _log("checkin_denied", {"reason": "bad_secret"})
+        return _json(401, {"error": "unauthorized"})
+
+    data = request.get_json(silent=True) or {}
+    ticket_code = (data.get("ticket_code") or "").strip()
+    event_id = data.get("event_id")
+
+    if not ticket_code or event_id is None:
+        _log("checkin_bad_request", {"missing": True})
+        return _json(400, {"error": "bad_request", "message": "ticket_code and event_id are required"})
+
+    try:
+        event_id_int = int(event_id)
+        if event_id_int <= 0:
+            raise ValueError
+    except Exception:
+        return _json(400, {"error": "bad_request", "message": "event_id must be a positive integer"})
+
+    try:
+        conn = _get_pg_conn()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, event_id, ticket_code, created_at
+                    FROM bookings
+                    WHERE ticket_code = %s AND event_id = %s
+                    LIMIT 1
+                    """,
+                    (ticket_code, event_id_int),
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        _log("checkin_error", {"error": repr(e)})
+        return _json(500, {"error": "server_error"})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not row:
+        _log("checkin_invalid", {"event_id": event_id_int})
+        return _json(200, {"valid": False})
+
+    booking = {
+        "id": row[0],
+        "user_id": row[1],
+        "event_id": row[2],
+        "ticket_code": row[3],
+        "created_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+    }
+
+    _log("checkin_valid", {"event_id": event_id_int, "booking_id": booking["id"]})
+    return _json(200, {"valid": True, "booking": booking})
+
+--- ./functions/generate_ticket_qr/requirements.txt ---
+functions-framework==3.7.0
+qrcode[pil]==7.4.2
+
+--- ./functions/generate_ticket_qr/main.py ---
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+from typing import Any, Dict, Tuple
+
+import qrcode
+
+
+def _json(status: int, payload: Dict[str, Any]) -> Tuple[str, int, Dict[str, str]]:
+    return (json.dumps(payload), status, {"Content-Type": "application/json"})
+
+
+def generate_ticket_qr(request):
+    expected = os.environ.get("QR_FUNCTION_SECRET", "")
+    provided = request.headers.get("X-QR-Secret", "")
+    if not expected or provided != expected:
+        return _json(401, {"error": "unauthorized"})
+
+    data = request.get_json(silent=True) or {}
+    ticket_code = (data.get("ticket_code") or "").strip()
+
+    if not ticket_code:
+        return _json(400, {"error": "bad_request", "message": "ticket_code is required"})
+
+    img = qrcode.make(ticket_code)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    png_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    return _json(200, {
+        "ticket_code": ticket_code,
+        "png_base64": png_b64,
+        "data_url": f"data:image/png;base64,{png_b64}",
+    })
+
+--- ./functions/send_booking_email/requirements.txt ---
+functions-framework==3.7.0
+requests==2.32.3
+
+--- ./functions/send_booking_email/main.py ---
+from __future__ import annotations
+
+import base64
+import json
+import os
+from typing import Any, Dict, Tuple
+
+import requests
+
+
+def _json(status: int, payload: Dict[str, Any]) -> Tuple[str, int, Dict[str, str]]:
+    return (json.dumps(payload), status, {"Content-Type": "application/json"})
+
+
+def send_booking_email(request):
+    # Shared-secret header (same pattern as your other functions)
+    expected = os.environ.get("EMAIL_FUNCTION_SECRET", "")
+    provided = request.headers.get("X-Email-Secret", "")
+    if not expected or provided != expected:
+        return _json(401, {"error": "unauthorized"})
+
+    data = request.get_json(silent=True) or {}
+    to_email = (data.get("to_email") or "").strip()
+    subject = (data.get("subject") or "").strip() or "Your Campus Event Ticket"
+    html = (data.get("html") or "").strip() or "<p>Your ticket is attached.</p>"
+    qr_png_base64 = (data.get("qr_png_base64") or "").strip()
+
+    if not to_email:
+        return _json(400, {"error": "bad_request", "message": "to_email is required"})
+    if not qr_png_base64:
+        return _json(400, {"error": "bad_request", "message": "qr_png_base64 is required"})
+
+    api_key = os.environ.get("SENDGRID_API_KEY", "")
+    from_email = os.environ.get("FROM_EMAIL", "")
+    if not api_key:
+        return _json(500, {"error": "server_error", "message": "SENDGRID_API_KEY not set"})
+    if not from_email:
+        return _json(500, {"error": "server_error", "message": "FROM_EMAIL not set"})
+
+    # Inline image: reference this in HTML as <img src="cid:ticketqr" />
+    if "cid:ticketqr" not in html:
+        html = html + '<p><img alt="Ticket QR" src="cid:ticketqr" /></p>'
+
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": from_email},
+        "subject": subject,
+        "content": [
+            {"type": "text/plain", "value": "Your ticket is attached (QR code)."},
+            {"type": "text/html", "value": html},
+        ],
+        "attachments": [
+            {
+                "content": qr_png_base64,            # already base64
+                "type": "image/png",
+                "filename": "ticket-qr.png",
+                "disposition": "attachment",
+                "content_id": "ticketqr",            # matches cid:ticketqr
+            }
+        ],
+    }
+
+    r = requests.post(
+        "https://api.sendgrid.com/v3/mail/send",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=10,
+    )
+
+    # SendGrid returns 202 on accepted
+    if r.status_code != 202:
+        return _json(
+            502,
+            {
+                "error": "sendgrid_error",
+                "status": r.status_code,
+                "message": r.text[:300],
+            },
+        )
+
+    return _json(200, {"ok": True})
+
+--- ./.github/workflows/tests.yml ---
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        env:
+          DISABLE_FIRESTORE_LOGS: "1"
+          FLASK_SECRET_KEY: "ci-test-secret"
+        run: |
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+--- ./project_dump.txt ---
+
+--- ./main.py ---
+from app import create_app
+
+app = create_app()
+
